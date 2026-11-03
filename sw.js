@@ -1,6 +1,6 @@
 // Offline-Cache: Seite funktioniert auch ohne Netz (z. B. Funkloch auf der Tour).
 // Bei jedem Laden wird im Hintergrund die neue Version geholt.
-const CACHE='liefertour-v1';
+const CACHE='liefertour-v2';
 const CORE=['./','./index.html','./manifest.webmanifest','./icon-180.png','./icon-512.png'];
 self.addEventListener('install',e=>{ e.waitUntil(caches.open(CACHE).then(c=>c.addAll(CORE))); self.skipWaiting(); });
 self.addEventListener('activate',e=>{ e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k))))); self.clients.claim(); });
