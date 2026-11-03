@@ -255,6 +255,30 @@ textarea#paste{width:100%;min-height:150px;border:1px solid var(--line);border-r
 .fc-rows b{font-weight:600;white-space:nowrap}
 .fc-rows .tot{background:var(--surface);font-weight:600}
 .fc-rows .tot b{font-family:var(--font-display);font-size:20px}
+.snote{font-size:15px;font-weight:500;background:color-mix(in srgb,var(--mark) 24%,var(--surface));border-left:3px solid var(--mark);padding:4px 9px;border-radius:6px;white-space:pre-wrap;color:var(--ink)}
+.arr{font-weight:700;color:var(--good)}
+.arr.late{color:var(--warn)}
+.hist{font-style:italic}
+.body .linkbtn{align-self:flex-start;padding:2px 0}
+.nform{display:flex;flex-direction:column;gap:8px}
+.nform textarea{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:8px 10px;width:100%}
+.cmp div{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:12px;align-items:baseline}
+.cmp b{min-width:86px;text-align:right}
+.cmp .hd{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.04em;text-transform:uppercase;background:var(--surface)}
+.cmp .hd span{min-width:86px;text-align:right}
+.cmp .hd span:first-child{min-width:0}
+.cmp .neg{color:var(--warn)}
+.cmp .pos{color:var(--good)}
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+.tbl table{border-collapse:collapse;width:100%;font-size:14px;white-space:nowrap}
+.tbl th,.tbl td{padding:7px 10px;text-align:right;border-top:1px solid var(--line)}
+.tbl th:first-child,.tbl td:first-child{text-align:left}
+.tbl thead th{border-top:0;color:var(--muted);font-weight:600;background:var(--sunk)}
+.tbl tfoot td{font-weight:700;background:var(--sunk)}
+.chkline{display:flex;gap:10px;align-items:center;font-size:15px;min-height:36px}
+.chkline input{width:20px;height:20px;accent-color:var(--accent)}
+.sub3{margin:6px 0 0;font-family:var(--font-display);font-weight:600;font-size:18px}
+.filebtn{cursor:pointer}
 .two.eq{grid-template-columns:repeat(2,minmax(0,1fr))}
 .form-err{grid-column:1/-1;margin:0;color:var(--warn);font-weight:600;font-size:14px}
 .toast{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-weight:600;font-size:15px;z-index:20;max-width:calc(100% - 32px)}
@@ -420,9 +444,14 @@ const state = {
   tail: ls.get('tail',25),          // Minuten nach dem letzten Stopp bis Feierabend
   offset: ls.get('offset',10),     // Minuten, um die der echte Beginn nach dem importierten Plan liegt
   payDay: ls.get('payDay',24),      // Lohnmonat beginnt standardmäßig am 24. des Vormonats (1 = Kalendermonat)
-  payStarts: ls.get('payStarts',{}) // "2026-11": "2026-10-22" – abweichender Beginn je Lohnmonat
+  payStarts: ls.get('payStarts',{}), // "2026-11": "2026-10-22" – abweichender Beginn je Lohnmonat
+  arr: ls.get('arr',{}),            // "2026-11-03": {"2":"05:01", ...} echte Ankunft je Stopp (Haken)
+  notes: ls.get('notes',{}),        // "5": "Schlüssel im Kasten" – Notiz je Stopp
+  slips: ls.get('slips',{}),        // "2026-11": Lohnabrechnung
+  calRemind: ls.get('calRemind',60),
+  noteMode:false, noteEdit:null, showBill:false, slip:{busy:false,msg:'',err:false,draft:null}
 };
-let DB=null, SAMPLE=null, WORK=null, SETTINGS=null;
+let DB=null, SAMPLE=null, WORK=null, SETTINGS=null, ARR=null, SLIPS=null, DOWNLOADS=null;
 
 function entry(s){ return state.months[s.slice(0,7)]?.days?.[s.slice(8,10)] || null; }
 function allNames(){
@@ -460,7 +489,31 @@ function periodOf(date){
   return k;
 }
 const dm = s => { const d=fromIso(s); return `${pad(d.getDate())}.${pad(d.getMonth()+1)}.`; };
-function checks(s){ return new Set(ls.get('chk:'+s,[])); }
+function arrOf(s){
+  if(state.arr[s]) return state.arr[s];
+  const old=ls.get('chk:'+s,null); // ältere Haken ohne Uhrzeit
+  return Array.isArray(old)&&old.length ? Object.fromEntries(old.map(n=>[n,''])) : {};
+}
+function checks(s){ return new Set(Object.keys(arrOf(s)).map(Number)); }
+function saveArr(date,a){
+  if(Object.keys(a).length) state.arr[date]=a; else delete state.arr[date];
+  ls.set('arr',state.arr); try{ localStorage.removeItem('chk:'+date); }catch{}
+  if(ARR) chain(()=>Object.keys(a).length?ARR.doc(date).set({date,stops:a}):ARR.doc(date).delete());
+}
+// Wie weit die echte Ankunft vom Plan abweicht (Median der letzten 20 Touren)
+function arrivalStats(){
+  const dev={};
+  for(const date of Object.keys(state.arr).sort().reverse()){
+    const dow=fromIso(date).getDay();
+    for(const [no,t] of Object.entries(state.arr[date])){
+      const pl=STOPS[no-1]?.days[dow]; if(!t||!pl) continue;
+      (dev[no]=dev[no]||[]); if(dev[no].length<20) dev[no].push(toMin(t)-toMin(pl.t));
+    }
+  }
+  const out={}; for(const [no,l] of Object.entries(dev)){ const v=[...l].sort((a,b)=>a-b); out[no]={n:v.length,med:v[Math.floor(v.length/2)]}; }
+  return out;
+}
+const fmtDev = d => d===0?'pünktlich':`${d>0?'+':'−'}${Math.abs(d)} min`;
 
 /* ---------- Fahrt ---------- */
 function renderFahrt(){
@@ -491,6 +544,7 @@ function renderFahrt(){
     banner=`<div class="now"><span class="k">Tour</span><span class="v">Alle Stopps erledigt</span><span class="s">Gute Rückfahrt nach Stutensee.</span></div>`;
   }
 
+  const A=arrOf(sel), stats=arrivalStats();
   const rows=all.map((s,i)=>{
     const cls=['stop']; if(s.no===1||s.end) cls.push('home');
     if(cur>=0||cur===all.length){ if(ch.has(s.no)) cls.push('checked','done'); else if(!ch.size && i<cur) cls.push('done'); if(i===cur) cls.push('cur'); }
@@ -500,10 +554,18 @@ function renderFahrt(){
     if(s.no===1) meta.push(`<span class="tag">Abfahrt</span>`);
     if(s.end) meta.push(`<span class="tag">Rückfahrt</span>`);
     if(s.win) meta.push(`<span class="mark num">${esc(s.win)}</span>`);
+    const at=A[s.no];
+    if(at){ const dv=s.m!=null?toMin(at)-s.m:null; meta.push(`<span class="arr num ${dv>2?'late':dv!=null&&dv<-2?'early':''}">✓ ${at}${dv!=null?` · ${fmtDev(dv)}`:''}</span>`); }
+    else if(stats[s.no]?.n>=3) meta.push(`<span class="hist num">meist ${fmtDev(stats[s.no].med)}</span>`);
     if(s.d!=null && next && !next.end){ const gap=next.m-s.m; meta.push(`<span class="num">${s.d} min bis ${esc(next.name.split(' ').slice(-1)[0])}${gap>s.d?` · ${gap-s.d} min Puffer`:''}</span>`); }
+    const note=state.notes[s.no];
+    const noteHtml = state.noteEdit===s.no
+      ? `<form class="nform" data-no="${s.no}"><textarea id="n-text" rows="2" placeholder="z. B. Türcode, Schlüssel, Kisten">${esc(note||'')}</textarea>
+          <div class="file"><button class="btn primary" type="submit">Speichern</button><button class="btn" type="button" data-ncancel="1">Abbrechen</button></div></form>`
+      : `${note?`<div class="snote">${esc(note)}</div>`:''}${state.noteMode?`<button class="linkbtn" data-noteedit="${s.no}">${note?'Notiz ändern':'+ Notiz'}</button>`:''}`;
     return `<li class="${cls.join(' ')}" data-no="${s.no}">
       <div class="t num">${s.t||''}</div><div class="rail"><span class="dot"></span></div>
-      <div class="body"><div class="name">${esc(s.name)}</div>${meta.length?`<div class="meta">${meta.join('')}</div>`:''}</div>
+      <div class="body"><div class="name">${esc(s.name)}</div>${meta.length?`<div class="meta">${meta.join('')}</div>`:''}${noteHtml}</div>
       <button class="chk" aria-label="${esc(s.name)} erledigt" aria-pressed="${ch.has(s.no)}">✓</button></li>`;
   }).join('');
 
@@ -535,6 +597,7 @@ function renderFahrt(){
       </div>
       <div class="tools">
         ${'wakeLock' in navigator?`<button class="btn" id="b-wake" aria-pressed="${state.wake}">${state.wake?'Display bleibt an':'Display anlassen'}</button>`:''}
+        <button class="btn" id="b-notes" aria-pressed="${state.noteMode}">${state.noteMode?'Notizen fertig':'Notizen'}</button>
         ${ch.size?`<button class="btn" id="b-reset">Haken zurücksetzen</button>`:''}
         ${!isToday?`<button class="btn" id="b-today">Zu heute</button>`:''}
       </div>
@@ -558,17 +621,29 @@ function renderFahrt(){
 }
 
 $('#v-fahrt').addEventListener('click',ev=>{
-  const b=ev.target.closest('[data-sel],[data-wk],#b-wake,#b-reset,#b-today,.stop');
+  if(ev.target.closest('.nform')){ if(ev.target.closest('[data-ncancel]')){ state.noteEdit=null; renderFahrt(); } return; }
+  const ne=ev.target.closest('[data-noteedit]');
+  if(ne){ state.noteEdit=+ne.dataset.noteedit; renderFahrt(); return $('#n-text')?.focus(); }
+  const b=ev.target.closest('[data-sel],[data-wk],#b-wake,#b-reset,#b-today,#b-notes,.stop');
   if(!b) return;
+  if(b.id==='b-notes'){ state.noteMode=!state.noteMode; state.noteEdit=null; return renderFahrt(); }
   if(b.dataset.sel){ state.sel=b.dataset.sel; return renderFahrt(); }
   if(b.dataset.wk){ state.sel=addDays(state.sel,+b.dataset.wk); return renderFahrt(); }
   if(b.id==='b-wake') return toggleWake();
   if(b.id==='b-today'){ state.sel=defaultSel(); return renderFahrt(); }
-  if(b.id==='b-reset'){ ls.set('chk:'+state.sel,[]); return renderFahrt(); }
+  if(b.id==='b-reset'){ saveArr(state.sel,{}); return renderFahrt(); }
   if(b.classList.contains('stop')){
-    const no=+b.dataset.no, c=checks(state.sel); c.has(no)?c.delete(no):c.add(no);
-    ls.set('chk:'+state.sel,[...c]); renderFahrt();
+    if(state.noteMode) return;
+    const no=+b.dataset.no, a={...arrOf(state.sel)};
+    if(no in a) delete a[no]; else a[no]=state.sel===todayIso()?hhmm(new Date()):'';
+    saveArr(state.sel,a); renderFahrt();
   }
+});
+$('#v-fahrt').addEventListener('submit',ev=>{
+  ev.preventDefault();
+  const no=+ev.target.dataset.no, t=$('#n-text').value.trim();
+  if(t) state.notes[no]=t; else delete state.notes[no];
+  state.noteEdit=null; saveSettings(); toast(t?'Notiz gespeichert':'Notiz gelöscht'); renderFahrt();
 });
 
 let wakeLock=null;
@@ -618,7 +693,8 @@ function renderMonat(){
       <h3>Anfangszeiten</h3>
       <p>Alle Uhrzeiten aus dem importierten Plan werden um diese Minuten später angezeigt. Gilt für alle Monate. 0 = genau wie im Plan.</p>
       <div class="file"><label class="field" style="max-width:220px"><span>Später als im Plan (Minuten)</span><input id="off-set" inputmode="numeric" value="${state.offset}"></label></div>
-    </div>`;
+    </div>
+    ${calHtml(key)}`;
   if(state.edit) $('#ed-name')?.focus({preventScroll:true});
 }
 function infoBox(doc){
@@ -742,6 +818,7 @@ function renderZeit(){
       ${state.wedit==='new'?wEditor(null):''}
       ${list.length?`<ul class="cal">${rows}</ul>`:state.wedit==='new'?'':`<div class="empty"><p>Vom ${dm(ps)} bis ${dm(pe)} gibt es noch keine Zeiten. Starte die Uhr oder trage vergangene Tage nach.</p></div>`}
     </div>
+    ${billHtml(key,ps,pe,list,tot,eur)}
     <div class="card src">
       <h3>Stundenlohn</h3>
       <p>Gilt für neue Einträge. Bei alten Einträgen kannst du den Lohn einzeln ändern.</p>
@@ -816,7 +893,7 @@ let UID_OK=false;
 function saveEntry(e,msg){ state.work[e.id]=e; persistWork(); render(); chain(()=>WORK.doc(e.id).set(e),msg); }
 function deleteEntry(id){ delete state.work[id]; persistWork(); render(); chain(()=>WORK.doc(id).delete(),'Eintrag gelöscht'); }
 function saveSettings(){
-  const s={wage:state.wage,timer:state.timer,offset:state.offset,payDay:state.payDay,payStarts:state.payStarts,tail:state.tail};
+  const s={wage:state.wage,timer:state.timer,offset:state.offset,payDay:state.payDay,payStarts:state.payStarts,tail:state.tail,notes:state.notes,calRemind:state.calRemind};
   for(const k in s) ls.set(k,s[k]);
   chain(()=>SETTINGS.set(s));
 }
@@ -886,6 +963,231 @@ $('#v-zeit').addEventListener('submit',ev=>{
   saveEntry(e,`Gespeichert: ${hm(wMins(e))}${e.wage?' · '+money(wEarn(e)):''}`);
 });
 
+/* ---------- Monatsabrechnung & Lohnabrechnung ---------- */
+const dec = (x,d=2) => (+x).toLocaleString('de-DE',{minimumFractionDigits:d,maximumFractionDigits:d});
+async function saveFile(name,text,mime){
+  if(DOWNLOADS){
+    try{ await DOWNLOADS.save({filename:name,data:text}); toast('Gespeichert'); }
+    catch(e){ if(e?.code!=='declined') toast('Speichern hat hier nicht geklappt'); }
+    return;
+  }
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:mime}));
+  a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),10000);
+}
+const canSave = () => !!DOWNLOADS || !IN_CLAUDE;
+
+function billHtml(key,ps,pe,list,tot,eur){
+  const [y,m]=key.split('-').map(Number), slip=state.slips[key], sl=state.slip;
+  const asc=[...list].sort((a,b)=>(a.date+a.start).localeCompare(b.date+b.start));
+  let cmp='';
+  if(slip){
+    const extra=(slip.extras||[]).reduce((a,x)=>a+(+x.amount||0),0);
+    const myH=tot/60, base=slip.gross!=null?slip.gross-extra:null;
+    const dH=slip.hours!=null?slip.hours-myH:null, dE=base!=null?base-eur:null;
+    const cls=v=>v==null?'':v< -0.5?'neg':v>0.5?'pos':'';
+    cmp=`<div class="fc-rows num cmp">
+      <div class="hd"><span></span><span>Abrechnung</span><span>Deine Zeiten</span></div>
+      <div><span>Stunden</span><b>${slip.hours!=null?dec(slip.hours)+' h':'–'}</b><b>${dec(myH)} h</b></div>
+      <div><span>Lohn ohne Zuschläge</span><b>${base!=null?money(base):'–'}</b><b>${money(eur)}</b></div>
+      ${(slip.extras||[]).map(x=>`<div><span>${esc(x.name||'Zuschlag')}</span><b>${money(+x.amount||0)}</b><b>–</b></div>`).join('')}
+      <div><span>Brutto</span><b>${slip.gross!=null?money(slip.gross):'–'}</b><b></b></div>
+      <div><span>Netto (Auszahlung)</span><b>${slip.net!=null?money(slip.net):'–'}</b><b></b></div>
+      <div class="tot"><span>Unterschied</span><b class="${cls(dE)}">${dE!=null?(dE>=0?'+ ':'− ')+money(Math.abs(dE)):'–'}</b><b class="${cls(dH)}">${dH!=null?(dH>=0?'+ ':'− ')+dec(Math.abs(dH))+' h':''}</b></div>
+    </div>
+    <p>${dE==null?'':dE< -0.5?`Laut deinen Zeiten fehlen dir etwa ${money(-dE)}. Prüf die Tage unten oder frag nach.`:dE>0.5?'Die Abrechnung ist höher als deine erfassten Zeiten. Vielleicht fehlen Einträge.':'Abrechnung und deine Zeiten passen zusammen.'}
+      ${slip.from&&slip.to?` Abgerechneter Zeitraum: ${dm(slip.from)}${slip.from.slice(0,4)} – ${dm(slip.to)}${slip.to.slice(0,4)}.`:''}${slip.note?` ${esc(slip.note)}`:''}</p>
+    <div class="file"><button class="btn" data-act="slipdel">Abrechnung entfernen</button></div>`;
+  }
+  const d=sl.draft;
+  const review=d?`<form class="card src slipform" id="slip-form">
+      <h3>Gelesen aus deiner Lohnabrechnung</h3>
+      <div class="two eq">
+        <label class="field"><span>Lohnmonat</span><input type="month" id="s-key" value="${esc(d.key)}" required></label>
+        <label class="field"><span>Stundenlohn €</span><input id="s-wage" inputmode="decimal" value="${d.wage!=null?eurIn(d.wage):''}"></label>
+        <label class="field"><span>Zeitraum von</span><input type="date" id="s-from" value="${esc(d.from||'')}"></label>
+        <label class="field"><span>bis</span><input type="date" id="s-to" value="${esc(d.to||'')}"></label>
+        <label class="field"><span>Stunden</span><input id="s-hours" inputmode="decimal" value="${d.hours!=null?dec(d.hours):''}"></label>
+        <label class="field"><span>Brutto €</span><input id="s-gross" inputmode="decimal" value="${d.gross!=null?eurIn(d.gross):''}"></label>
+        <label class="field"><span>Netto €</span><input id="s-net" inputmode="decimal" value="${d.net!=null?eurIn(d.net):''}"></label>
+        <label class="field"><span>Zuschläge</span><input id="s-extras" value="${esc((d.extras||[]).map(x=>`${x.name} ${eurIn(+x.amount||0)}`).join('; '))}" placeholder="z. B. Nachtzuschlag 12,30"></label>
+      </div>
+      ${d.note?`<p class="warn">${esc(d.note)}</p>`:''}
+      <span class="label">Was soll angepasst werden?</span>
+      <label class="chkline"><input type="checkbox" id="o-wage" checked> Stundenlohn für neue Einträge übernehmen</label>
+      <label class="chkline"><input type="checkbox" id="o-entries" checked> Lohn bei den Einträgen in diesem Zeitraum anpassen</label>
+      <label class="chkline"><input type="checkbox" id="o-period" ${d.from&&d.to?'checked':''}> Lohnmonat auf diesen Zeitraum setzen</label>
+      <p>Bitte kurz mit der Abrechnung vergleichen, bevor du übernimmst.</p>
+      <div class="file"><button class="btn primary" type="submit">Übernehmen</button><button class="btn" type="button" data-act="slipcancel">Verwerfen</button></div>
+    </form>`:'';
+  const upload = SAMPLE
+    ? `<div class="file"><label class="btn primary filebtn">Lohnabrechnung hochladen<input type="file" id="slip-file" accept="image/png,image/jpeg,image/webp,application/pdf" hidden></label>
+        ${sl.busy?`<button class="btn" data-act="slipstop">Abbrechen</button>`:''}</div>
+       <p>Foto, Screenshot oder PDF. Claude liest Stundenlohn, Zeitraum, Stunden, Brutto und Netto aus.</p>`
+    : `<ol class="steps-ol">
+        <li><b>Claude öffnen</b> tippen und die Lohnabrechnung (Foto oder PDF) anhängen.</li>
+        <li>Claudes Antwort <b>kopieren</b>, zurückkommen und <b>Antwort einfügen</b> tippen.</li>
+      </ol>
+      <div class="file"><a class="btn primary" id="slip-claude" target="_blank" rel="noopener" href="https://claude.ai/new?q=${encodeURIComponent(SLIP_PROMPT_DE)}">Claude öffnen</a>
+        <button class="btn" data-act="slippaste">Antwort einfügen</button></div>
+      <label class="field"><span>Oder Antwort hier einfügen</span><textarea id="slip-text" rows="2" placeholder='{"monat": "2026-11", …}'></textarea></label>`;
+  return `<div class="card src bill">
+    <div class="fc-h"><h3>Abrechnung ${MON[m-1]} ${y}</h3><button class="linkbtn" data-act="bill">${state.showBill?'Tage ausblenden':`Alle ${asc.length} Tage`}</button></div>
+    ${state.showBill?`<div class="tbl"><table class="num"><thead><tr><th>Tag</th><th>Zeit</th><th>Pause</th><th>Std.</th><th>€</th></tr></thead><tbody>
+      ${asc.map(e=>`<tr><td>${WD[fromIso(e.date).getDay()]} ${dm(e.date)}</td><td>${esc(e.start)}–${esc(e.end)}</td><td>${e.pause?e.pause+' min':''}</td><td>${dec(wMins(e)/60)}</td><td>${dec(wEarn(e))}</td></tr>`).join('')}
+      </tbody><tfoot><tr><td colspan="3">Summe ${dm(ps)} – ${dm(pe)}</td><td>${dec(tot/60)}</td><td>${dec(eur)}</td></tr></tfoot></table></div>
+      <div class="file">${canSave()?`<button class="btn" data-act="csv">Als Tabelle speichern</button>`:''}<button class="btn" data-act="billcopy">Kopieren</button></div>`:''}
+    ${cmp || `<p>Noch keine Lohnabrechnung für ${MON[m-1]}. Lade sie hoch, dann vergleiche ich sie mit deinen Zeiten und passe Lohn und Zeitraum an.</p>`}
+    <h3 class="sub3">${slip?'Neue Lohnabrechnung':'Lohnabrechnung hochladen'}</h3>
+    ${upload}
+    ${sl.msg?`<p class="status ${sl.err?'err':''}">${esc(sl.msg)}</p>`:''}
+  </div>${review}`;
+}
+
+const SLIP_JSON = `{"monat":"YYYY-MM","von":"YYYY-MM-DD","bis":"YYYY-MM-DD","stundenlohn":13.9,"stunden":24.5,"brutto":340.55,"netto":340.55,"zuschlaege":[{"name":"Nachtzuschlag","betrag":12.3}],"hinweis":""}`;
+const SLIP_PROMPT = `The images show a German payslip (Lohnabrechnung / Entgeltabrechnung) of a part-time delivery driver.
+Extract: the month the payslip is for; the period of worked hours it pays, if it is stated (e.g. "24.10.–23.11."), else empty strings;
+the hourly wage (Stundenlohn) in EUR; the paid hours (Stunden); gross pay (Gesamtbrutto); net pay paid out (Auszahlungsbetrag/Netto);
+and every surcharge (Zuschlag, e.g. Nachtzuschlag, Sonntagszuschlag) with its amount. Use null for anything that is not on the payslip.
+"hinweis": one short German sentence about anything unusual (e.g. hours from another month), or "".
+Reply with only JSON in this shape, numbers with a dot as decimal separator:
+${SLIP_JSON}`;
+const SLIP_PROMPT_DE = `Lies meine Lohnabrechnung aus, die ich anhänge (Foto oder PDF).
+Gesucht: Abrechnungsmonat, der abgerechnete Zeitraum der Arbeitsstunden (falls angegeben, z. B. 24.10.–23.11.), Stundenlohn, bezahlte Stunden, Gesamtbrutto, Auszahlungsbetrag (Netto) und alle Zuschläge mit Betrag. Was nicht draufsteht: null.
+Antworte nur mit einem Codeblock mit genau diesem JSON (Zahlen mit Punkt):
+${SLIP_JSON}`;
+
+function normSlip(r){
+  const n=v=>v==null||v===''?null:(typeof v==='number'?v:num(v));
+  const dt=v=>/^\d{4}-\d{2}-\d{2}$/.test(String(v||''))?String(v):'';
+  let key=/^\d{4}-\d{2}$/.test(String(r?.monat||''))?String(r.monat):'';
+  const from=dt(r?.von), to=dt(r?.bis);
+  if(!key && to) key=to.slice(0,7);
+  if(!key) key=state.wcur||periodOf(todayIso());
+  const extras=(Array.isArray(r?.zuschlaege)?r.zuschlaege:[]).map(x=>({name:String(x?.name||'Zuschlag').slice(0,60),amount:n(x?.betrag)||0})).filter(x=>x.amount);
+  return {key,from,to,wage:n(r?.stundenlohn),hours:n(r?.stunden),gross:n(r?.brutto),net:n(r?.netto),extras,note:String(r?.hinweis||'').slice(0,240)};
+}
+function setSlip(p){ Object.assign(state.slip,p); if(view()==='zeit') renderZeit(); }
+
+let pdfLib=null;
+async function pdfToImages(file){
+  if(!pdfLib){
+    await new Promise((res,rej)=>{ const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); });
+    pdfLib=window.pdfjsLib; pdfLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  }
+  const pdf=await pdfLib.getDocument({data:await file.arrayBuffer()}).promise, out=[];
+  for(let i=1;i<=Math.min(pdf.numPages,3);i++){
+    const pg=await pdf.getPage(i), vp=pg.getViewport({scale:2}), c=document.createElement('canvas');
+    c.width=vp.width; c.height=vp.height; await pg.render({canvasContext:c.getContext('2d'),viewport:vp}).promise;
+    out.push(await new Promise(r=>c.toBlob(r,'image/png')));
+  }
+  return out;
+}
+let slipCtl=null;
+async function readSlip(file){
+  slipCtl=new AbortController();
+  setSlip({busy:true,err:false,msg:'Claude liest die Lohnabrechnung … das dauert meist 10 bis 40 Sekunden.',draft:null});
+  try{
+    const images=/pdf/i.test(file.type)||/\.pdf$/i.test(file.name)?await pdfToImages(file):[file];
+    const r=await SAMPLE.json(SLIP_PROMPT,{images,signal:slipCtl.signal});
+    setSlip({busy:false,msg:'',draft:normSlip(r)});
+    requestAnimationFrame(()=>$('#slip-form')?.scrollIntoView({behavior:'smooth',block:'start'}));
+  }catch(e){
+    const msg={cancelled:'Abgebrochen.',not_granted:'Claude darf auf dieser Seite nicht lesen.',rate_limited:'Gerade zu viele Anfragen. Bitte in ein paar Minuten nochmal.',
+      image_rejected:'Die Datei konnte nicht gelesen werden. Versuche ein Foto oder Screenshot.',invalid_json:'Die Antwort war unvollständig. Bitte nochmal versuchen.'}[e?.code]
+      || (e?.code?'Das hat nicht geklappt. Bitte nochmal versuchen.':'Die PDF konnte nicht geöffnet werden. Versuche einen Screenshot davon.');
+    setSlip({busy:false,err:e?.code!=='cancelled',msg});
+  }finally{ slipCtl=null; }
+}
+function slipFromText(t){
+  const a=t.indexOf('{'), b=t.lastIndexOf('}');
+  if(a<0||b<a) return setSlip({err:true,msg:'In der Antwort steht kein Ergebnis. Kopiere den ganzen Codeblock von Claude.',draft:null});
+  try{ setSlip({err:false,msg:'',draft:normSlip(JSON.parse(t.slice(a,b+1)))}); requestAnimationFrame(()=>$('#slip-form')?.scrollIntoView({behavior:'smooth',block:'start'})); }
+  catch{ setSlip({err:true,msg:'Die Antwort ließ sich nicht lesen. Kopiere den ganzen Codeblock von Claude.',draft:null}); }
+}
+function applySlip(){
+  const g=id=>$(id).value.trim(), nn=v=>v===''?null:num(v);
+  const d={key:g('#s-key'),from:g('#s-from'),to:g('#s-to'),wage:nn(g('#s-wage')),hours:nn(g('#s-hours')),gross:nn(g('#s-gross')),net:nn(g('#s-net')),
+    extras:g('#s-extras').split(';').map(x=>x.trim()).filter(Boolean).map(x=>{ const m=x.match(/^(.*?)\s*(-?[\d.,]+)\s*€?$/); return m?{name:m[1]||'Zuschlag',amount:num(m[2].replace(/\.(?=\d{3})/g,''))}:{name:x,amount:0}; }),
+    note:state.slip.draft?.note||'', savedAt:new Date().toISOString()};
+  if(!/^\d{4}-\d{2}$/.test(d.key)) return toast('Bitte den Lohnmonat angeben');
+  const done=[];
+  if($('#o-period').checked && d.from && d.to && d.to>=d.from){
+    const next=addMonthKey(d.key,1);
+    delete state.payStarts[d.key]; delete state.payStarts[next];
+    if(periodStart(d.key)!==d.from) state.payStarts[d.key]=d.from;
+    const ns=addDays(d.to,1); if(periodStart(next)!==ns) state.payStarts[next]=ns;
+    done.push(`Zeitraum ${dm(d.from)}–${dm(d.to)}`);
+  }
+  if($('#o-wage').checked && d.wage>0 && d.wage!==state.wage){ state.wage=d.wage; done.push(`Stundenlohn ${money(d.wage)}`); }
+  if($('#o-entries').checked && d.wage>0){
+    const a=d.from||periodStart(d.key), b=d.to||periodEnd(d.key); let n=0;
+    for(const e of Object.values(state.work)) if(e.date>=a && e.date<=b && +e.wage!==d.wage){
+      const ne={...e,wage:d.wage}; state.work[e.id]=ne; n++; chain(()=>WORK.doc(ne.id).set(ne));
+    }
+    if(n){ persistWork(); done.push(`${n} Einträge angepasst`); }
+  }
+  state.slips[d.key]=d; ls.set('slips',state.slips); chain(()=>SLIPS.doc(d.key).set(d));
+  saveSettings();
+  state.slip={busy:false,msg:'',err:false,draft:null}; state.wcur=d.key; state.wcurAuto=false;
+  renderZeit(); toast(done.length?`Übernommen: ${done.join(', ')}`:'Lohnabrechnung gespeichert');
+}
+function billText(key,list){
+  const asc=[...list].sort((a,b)=>(a.date+a.start).localeCompare(b.date+b.start));
+  return ['Datum;Beginn;Ende;Pause (min);Stunden;Stundenlohn;Betrag €;Notiz',
+    ...asc.map(e=>[`${dm(e.date)}${e.date.slice(0,4)}`,e.start,e.end,e.pause||0,dec(wMins(e)/60),dec(+e.wage||0),dec(wEarn(e)),`"${(e.note||'').replace(/"/g,"'")}"`].join(';'))].join('\r\n');
+}
+function zeitList(){ const k=state.wcur, a=periodStart(k), b=periodEnd(k); return Object.values(state.work).filter(e=>e.date>=a&&e.date<=b); }
+$('#v-zeit').addEventListener('change',ev=>{
+  if(ev.target.id==='slip-file'){ const f=ev.target.files[0]; if(f) readSlip(f); }
+  if(ev.target.id==='slip-text' && ev.target.value.trim()) slipFromText(ev.target.value);
+});
+$('#v-zeit').addEventListener('submit',ev=>{ if(ev.target.id==='slip-form'){ ev.preventDefault(); ev.stopImmediatePropagation(); applySlip(); } },true);
+document.addEventListener('click',async ev=>{
+  const a=ev.target.closest('[data-act]'); if(!a) return;
+  const act=a.dataset.act;
+  if(act==='bill'){ state.showBill=!state.showBill; return renderZeit(); }
+  if(act==='slipcancel'){ return setSlip({draft:null,msg:''}); }
+  if(act==='slipstop'){ return slipCtl?.abort(); }
+  if(act==='slipdel'){
+    if(!a.dataset.sure){ a.dataset.sure='1'; a.textContent='Wirklich entfernen?'; a.classList.add('stopbtn'); return; }
+    delete state.slips[state.wcur]; ls.set('slips',state.slips); const k=state.wcur; chain(()=>SLIPS.doc(k).delete(),'Abrechnung entfernt'); return renderZeit();
+  }
+  if(act==='slippaste'){ try{ slipFromText(await navigator.clipboard.readText()); }catch{ toast('Bitte die Antwort ins Feld darunter einfügen'); $('#slip-text')?.focus(); } return; }
+  if(act==='csv'){ return saveFile(`arbeitszeit-${state.wcur}.csv`,'﻿'+billText(state.wcur,zeitList()),'text/csv'); }
+  if(act==='billcopy'){ try{ await navigator.clipboard.writeText(billText(state.wcur,zeitList()).replace(/;/g,'\t')); toast('Kopiert'); }catch{ toast('Kopieren hat hier nicht geklappt'); } return; }
+});
+
+/* ---------- Kalender (.ics) ---------- */
+function myShifts(key){
+  const [y,m]=key.split('-').map(Number), out=[];
+  for(let i=1;i<=new Date(y,m,0).getDate();i++){ const s=planShift(`${key}-${pad(i)}`); if(s && s.n===state.me) out.push(s); }
+  return out;
+}
+function calHtml(key){
+  const [y,m]=key.split('-').map(Number);
+  let body;
+  if(IN_CLAUDE) body=`<p>Kalender-Termine gehen nur auf der GitHub-Version: <a href="https://samuelklsn.github.io/liefertour/#monat" target="_blank" rel="noopener">samuelklsn.github.io/liefertour</a></p>`;
+  else if(!state.me) body=`<p>Tippe oben auf deinen Namen, dann trage ich deine Touren ein.</p>`;
+  else { const n=myShifts(key).length;
+    body=n?`<p>Legt deine ${n} Touren im ${MON[m-1]} als Termine an, jeweils von Dienstbeginn bis ca. ${planEnd(2)}. Bitte nur einmal pro Monat übernehmen, sonst stehen die Termine doppelt im Kalender.</p>
+      <div class="file"><label class="field" style="max-width:220px"><span>Erinnerung</span><select id="cal-rem">${[[0,'keine'],[30,'30 min vorher'],[60,'1 Stunde vorher'],[90,'1,5 Stunden vorher'],[120,'2 Stunden vorher']].map(([v,l])=>`<option value="${v}" ${state.calRemind===v?'selected':''}>${l}</option>`).join('')}</select></label></div>
+      <div class="file"><button class="btn primary" data-act="ics">${n} Touren in den Kalender</button></div>`
+      :`<p>Im ${MON[m-1]} hast du laut Dienstplan keine Touren.</p>`; }
+  return `<div class="card src"><h3>In den iPhone-Kalender</h3>${body}</div>`;
+}
+function icsFor(key){
+  const st=d=>d.replace(/-/g,''), tm=t=>t.replace(':','')+'00', now=new Date().toISOString().replace(/[-:]/g,'').slice(0,15)+'Z';
+  const ev=myShifts(key).map(s=>{ const dow=fromIso(s.date).getDay(), r=route(dow).stops;
+    return ['BEGIN:VEVENT',`UID:liefertour-${st(s.date)}@samuelklsn.github.io`,`DTSTAMP:${now}`,
+      `DTSTART:${st(s.date)}T${tm(s.start)}`,`DTEND:${st(s.date)}T${tm(s.end)}`,`SUMMARY:Liefertour`,
+      `LOCATION:${HOME}`,`DESCRIPTION:Dienstbeginn ${s.start}\\, Abfahrt ${r[0].t}\\, letzter Stopp ${r.at(-1).t}`,
+      ...(state.calRemind?['BEGIN:VALARM','ACTION:DISPLAY','DESCRIPTION:Liefertour',`TRIGGER:-PT${state.calRemind}M`,'END:VALARM']:[]),
+      'END:VEVENT'].join('\r\n'); });
+  return ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Liefertour//DE','CALSCALE:GREGORIAN','METHOD:PUBLISH',...ev,'END:VCALENDAR'].join('\r\n')+'\r\n';
+}
+$('#v-monat').addEventListener('change',ev=>{ if(ev.target.id==='cal-rem'){ state.calRemind=+ev.target.value; saveSettings(); } });
+document.addEventListener('click',ev=>{ if(ev.target.closest('[data-act="ics"]')) saveFile(`liefertour-${state.mcur}.ics`,icsFor(state.mcur),'text/calendar'); });
+
 /* ---------- Speichern / Sync ---------- */
 let writeChain=Promise.resolve();
 function saveMonth(key,doc,msg='Gespeichert'){
@@ -931,6 +1233,11 @@ async function initDb(){
       for(const [id,e] of Object.entries(state.work)) if(!w[id]){ w[id]=e; chain(()=>WORK.doc(id).set(e)); } }
     state.work=w; persistWork(); softRender();
   },()=>{});
+  // Echte Ankunftszeiten und Lohnabrechnungen, ebenfalls privat
+  ARR=db.doc(`data/users/${uid}/work`).collection('arrivals');
+  SLIPS=db.doc(`data/users/${uid}/work`).collection('payslips');
+  syncCollection(ARR,'arr',d=>d.stops||{},(id,v)=>({date:id,stops:v}));
+  syncCollection(SLIPS,'slips',d=>d,(id,v)=>v);
   SETTINGS.onSnapshot(s=>{
     if(!s.exists){ if(!s.metadata.fromCache && (state.wage||state.timer)) saveSettings(); return; }
     const d=s.data(); state.wage=+d.wage||0; state.timer=d.timer||null;
@@ -938,16 +1245,29 @@ async function initDb(){
     if(typeof d.payDay==='number') state.payDay=d.payDay;
     if(d.payStarts) state.payStarts=d.payStarts;
     if(typeof d.tail==='number') state.tail=d.tail;
-    for(const k of ['wage','timer','offset','payDay','payStarts','tail']) ls.set(k,state[k]);
+    if(d.notes) state.notes=d.notes;
+    if(typeof d.calRemind==='number') state.calRemind=d.calRemind;
+    for(const k of ['wage','timer','offset','payDay','payStarts','tail','notes','calRemind']) ls.set(k,state[k]);
     if(!state.pedit) softRender();
+  },()=>{});
+}
+// Hält eine private Sammlung mit state[key] gleich; lokale Daten werden beim ersten Kontakt hochgeladen
+function syncCollection(col,key,fromDoc,toDoc){
+  let first=true;
+  col.onSnapshot(snap=>{
+    if(snap.metadata.fromCache && snap.empty) return;
+    const m={}; snap.docs.forEach(d=>{ m[d.id]=fromDoc(d.data()); });
+    if(first && !snap.metadata.fromCache){ first=false;
+      for(const [id,v] of Object.entries(state[key])) if(!m[id]){ m[id]=v; chain(()=>col.doc(id).set(toDoc(id,v))); } }
+    state[key]=m; ls.set(key,m); softRender();
   },()=>{});
 }
 function softRender(){
   const v=view();
-  if(v==='fahrt') return renderFahrt();
+  if(v==='fahrt') return state.noteEdit==null && renderFahrt();
   const foc=document.activeElement?.id;
   if(v==='monat' && !state.edit && !state.editInfo && foc!=='off-set') return renderMonat();
-  if(v==='zeit' && !state.wedit && !state.pedit && foc!=='w-wage-set' && foc!=='fc-tail') return renderZeit();
+  if(v==='zeit' && !state.wedit && !state.pedit && !state.slip.draft && !state.slip.busy && !['w-wage-set','fc-tail','slip-text'].includes(foc)) return renderZeit();
   if(v==='import') renderPreview();
 }
 
@@ -1105,6 +1425,9 @@ async function initSample(){
   const s=await claude.use('sample').catch(()=>null); if(!s) return;
   const lim=await s.limits().catch(()=>null);
   if(lim?.images){ SAMPLE=s; $('#src-img').hidden=false; $('#src-claude').hidden=true; }
+  DOWNLOADS=await claude.use('downloads').catch(()=>null);
+  if(DOWNLOADS) $('#bk-save').hidden=false;
+  softRender();
 }
 
 /* ---------- Claude-Verknüpfung, Sicherung, Offline ---------- */
@@ -1128,7 +1451,7 @@ $('#b-clip').addEventListener('click',async()=>{
 });
 
 function backupData(){
-  return {liefertour:1, exportedAt:new Date().toISOString(), months:state.months, work:state.work,
+  return {liefertour:1, exportedAt:new Date().toISOString(), months:state.months, work:state.work, arr:state.arr, slips:state.slips, notes:state.notes,
     settings:{wage:state.wage,offset:state.offset,payDay:state.payDay,payStarts:state.payStarts,tail:state.tail,me:state.me}};
 }
 function restore(text){
@@ -1136,6 +1459,9 @@ function restore(text){
   if(!d||d.liefertour!==1) return toast('Das ist keine Liefertour-Sicherung');
   const months=d.months||{}, work=d.work||{}, s=d.settings||{};
   Object.assign(state.months,months); Object.assign(state.work,work);
+  if(d.arr){ Object.assign(state.arr,d.arr); ls.set('arr',state.arr); if(ARR) for(const [k,v] of Object.entries(d.arr)) chain(()=>ARR.doc(k).set({date:k,stops:v})); }
+  if(d.slips){ Object.assign(state.slips,d.slips); ls.set('slips',state.slips); if(SLIPS) for(const [k,v] of Object.entries(d.slips)) chain(()=>SLIPS.doc(k).set(v)); }
+  if(d.notes) state.notes={...state.notes,...d.notes};
   for(const k of ['wage','offset','payDay','tail']) if(typeof s[k]==='number') state[k]=s[k];
   if(s.payStarts) state.payStarts={...state.payStarts,...s.payStarts};
   if(s.me && !state.me){ state.me=s.me; ls.set('me',s.me); }
@@ -1145,12 +1471,7 @@ function restore(text){
   state.wcurAuto=true; render();
   toast(`Sicherung geladen: ${Object.keys(months).length} Monate, ${Object.keys(work).length} Zeiten`);
 }
-$('#bk-save').addEventListener('click',()=>{
-  const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([JSON.stringify(backupData(),null,1)],{type:'application/json'}));
-  a.download=`liefertour-sicherung-${todayIso()}.json`; document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(()=>URL.revokeObjectURL(a.href),10000);
-});
+$('#bk-save').addEventListener('click',()=>saveFile(`liefertour-sicherung-${todayIso()}.json`,JSON.stringify(backupData(),null,1),'application/json'));
 $('#bk-copy').addEventListener('click',()=>{
   try{ navigator.clipboard.writeText(JSON.stringify(backupData())).then(()=>toast('Sicherung kopiert'),()=>toast('Kopieren hat hier nicht geklappt')); }
   catch{ toast('Kopieren hat hier nicht geklappt'); }
@@ -1196,7 +1517,7 @@ window.addEventListener('hashchange',()=>{ state.edit=null; state.editInfo=false
 let lastDay=todayIso();
 function tick(){
   const t=todayIso(); if(t!==lastDay){ lastDay=t; state.sel=defaultSel(); state.scrolled=false; }
-  if(view()==='fahrt') renderFahrt();
+  if(view()==='fahrt' && state.noteEdit==null) renderFahrt();
 }
 setInterval(tick,20000);
 
