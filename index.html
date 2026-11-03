@@ -66,6 +66,10 @@ button{cursor:pointer}
 .brand{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .brand h1{margin:0;font-family:var(--font-display);font-weight:700;font-size:22px;letter-spacing:.01em;display:flex;align-items:center;gap:8px}
 .sign{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:6px;background:var(--accent);color:var(--accent-ink);font-size:15px;font-weight:700}
+.brand-r{display:flex;align-items:center;gap:10px;min-width:0}
+.reload{width:40px;height:40px;color:var(--ink)}
+.reload.spin svg{animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 .sync{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;white-space:nowrap}
 .sync i{width:8px;height:8px;border-radius:50%;background:var(--muted)}
 .sync[data-s="ok"] i{background:var(--good)}
@@ -289,7 +293,10 @@ input[type=time],input[type=date]{-webkit-appearance:none;appearance:none;text-a
 <header class="top"><div class="top-in gut">
   <div class="brand">
     <h1><span class="sign">↗</span>Liefertour</h1>
-    <span class="sync" id="sync" data-s="wait"><i></i><span>Verbinde …</span></span>
+    <div class="brand-r">
+      <span class="sync" id="sync" data-s="wait"><i></i><span>Verbinde …</span></span>
+      <button class="iconbtn reload" id="b-reload" aria-label="Seite neu laden" title="Neu laden"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>
+    </div>
   </div>
   <nav class="tabs" aria-label="Ansicht">
     <a href="#fahrt" id="tab-fahrt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7h11v9H3zM14 10h4l3 3v3h-7"/><circle cx="7" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/></svg>Fahrt</a>
@@ -1150,6 +1157,19 @@ $('#bk-copy').addEventListener('click',()=>{
 });
 $('#bk-paste').addEventListener('click',async()=>{ try{ restore(await navigator.clipboard.readText()); }catch{ toast('Zwischenablage lässt sich nicht lesen'); } });
 $('#bk-file').addEventListener('change',async ev=>{ const f=ev.target.files[0]; if(f) restore(await f.text()); ev.target.value=''; });
+
+// Neu laden: auf der eigenen Adresse vorher die neueste Version in den Offline-Speicher holen
+$('#b-reload').addEventListener('click',async()=>{
+  const b=$('#b-reload'); b.classList.add('spin'); b.disabled=true;
+  if(!IN_CLAUDE && 'caches' in window){
+    try{
+      const reg=await navigator.serviceWorker?.getRegistration(); await reg?.update();
+      const r=await fetch('./',{cache:'no-store'});
+      if(r.ok){ for(const k of await caches.keys()){ const c=await caches.open(k); await c.put(new Request('./'),r.clone()); await c.put(new Request('./index.html'),r.clone()); } }
+    }catch{ /* offline: einfach aus dem Speicher neu laden */ }
+  }
+  location.reload();
+});
 
 if(!IN_CLAUDE){
   // Eigene Adresse: Daten liegen nur auf diesem Gerät
