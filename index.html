@@ -837,15 +837,16 @@ function forecastHtml(ps,pe,list,eur){
   if(!state.me) return `<div class="card src"><h3>Theoretisch im Lohnmonat</h3>
     <p>Wer bist du? Dann rechne ich deine Touren aus dem Dienstplan hoch.</p>
     <div class="people">${allNames().map(n=>`<button class="person" data-act="setme" data-n="${esc(n)}" style="--pc:${pc(n)}">${pill(n)}</button>`).join('')||'<span class="status">Erst einen Dienstplan importieren.</span>'}</div></div>`;
-  // Eingetragene Tage zählen mit den echten Zeiten, alle anderen Tage mit der Tour laut Dienstplan
-  const done=new Set(list.map(e=>e.date)), today=todayIso(), plan=[], missing=new Set();
+  // Vergangenheit: nur was eingetragen ist. Ab heute: deine Touren laut Dienstplan (ohne Eintrag).
+  const done=new Set(list.map(e=>e.date)), today=todayIso(), plan=[], past=[], missing=new Set();
   for(let d=ps; d<=pe; d=addDays(d,1)){
     if(done.has(d) || !PLAN[fromIso(d).getDay()]) continue;
     if(!state.months[d.slice(0,7)]){ if(d>=today) missing.add(d.slice(0,7)); continue; }
-    const s=planShift(d); if(s && s.n===state.me) plan.push(s);
+    const s=planShift(d); if(!s || s.n!==state.me) continue;
+    (d<today?past:plan).push(s);
   }
   const w=state.wage, eMin=list.reduce((a,e)=>a+wMins(e),0);
-  const pMin=plan.reduce((a,s)=>a+s.mins,0), pEur=pMin/60*w, past=plan.filter(s=>s.date<today);
+  const pMin=plan.reduce((a,s)=>a+s.mins,0), pEur=pMin/60*w;
   const ex=plan[0]||planShift(today);
   const miss=[...missing].map(k=>MON[+k.slice(5)-1]);
   return `<div class="card src fc">
@@ -853,13 +854,13 @@ function forecastHtml(ps,pe,list,eur){
     <div class="fc-big"><b class="num">${w||eur?money(eur+pEur):hm(eMin+pMin)}</b><span class="num">${done.size+plan.length} Tage · ${hm(eMin+pMin)} · bis ${dm(pe)}</span></div>
     <div class="fc-rows num">
       <div><span>Eingetragen: ${done.size} Tage · ${hm(eMin)}</span><b>${money(eur)}</b></div>
-      <div><span>Laut Dienstplan: ${plan.length} Touren · ${hm(pMin)}</span><b>+ ${w?money(pEur):'–'}</b></div>
+      <div><span>Kommt noch laut Dienstplan: ${plan.length} Touren · ${hm(pMin)}</span><b>+ ${w?money(pEur):'–'}</b></div>
       <div class="tot"><span>Theoretisch gesamt</span><b>${w||eur?money(eur+pEur):'–'}</b></div>
     </div>
-    ${past.length?`<p class="warn">${past.length} vergangene Tour${past.length>1?'en':''} ohne Eintrag (${past.map(s=>dm(s.date)).join(', ')}). Sie zählen nach Plan, bis du sie nachträgst.</p>`:''}
+    ${past.length?`<p class="warn">Laut Dienstplan bist du am ${past.map(s=>dm(s.date)).join(', ')} gefahren, aber dafür gibt es keinen Eintrag. Diese Tage zählen nicht mit. Falls du gefahren bist: unten nachtragen.</p>`:''}
     ${!w?`<p class="warn">Trag unten deinen Stundenlohn ein, dann rechnet der Plan-Teil in Euro.</p>`:''}
     ${miss.length?`<p class="warn">Für ${miss.join(' und ')} fehlt der Dienstplan. Diese kommenden Tage sind noch nicht eingerechnet.</p>`:''}
-    <p>Eingetragene Tage zählen mit deinen echten Zeiten. Alle anderen Touren zählen von Dienstbeginn laut Plan${state.offset?` ${offTxt()}`:''} bis letzter Stopp + Nachlauf${ex?`, z. B. ${WD[fromIso(ex.date).getDay()]} ${ex.start}–${ex.end}`:''}.</p>
+    <p>Vergangene Tage zählen nur, wenn du sie eingetragen hast, mit deinen echten Zeiten. Ab heute zählen deine Touren laut Dienstplan von Dienstbeginn laut Plan${state.offset?` ${offTxt()}`:''} bis letzter Stopp + Nachlauf${ex?`, z. B. ${WD[fromIso(ex.date).getDay()]} ${ex.start}–${ex.end}`:''}.</p>
     <div class="file"><label class="field" style="max-width:240px"><span>Nachlauf nach letztem Stopp (min)</span><input id="fc-tail" inputmode="numeric" value="${state.tail}"></label></div>
   </div>`;
 }
