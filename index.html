@@ -253,6 +253,7 @@ textarea#paste{width:100%;min-height:150px;border:1px solid var(--line);border-r
 .fc-rows div{display:flex;justify-content:space-between;gap:10px;padding:9px 12px;background:var(--sunk);border-top:1px solid var(--line);font-size:15px}
 .fc-rows div:first-child{border-top:0}
 .fc-rows b{font-weight:600;white-space:nowrap}
+.fc-rows .dl{display:block;font-size:13px;color:var(--muted);font-weight:400;margin-top:2px}
 .fc-rows .tot{background:var(--surface);font-weight:600}
 .fc-rows .tot b{font-family:var(--font-display);font-size:20px}
 .snote{font-size:15px;font-weight:500;background:color-mix(in srgb,var(--mark) 24%,var(--surface));border-left:3px solid var(--mark);padding:4px 9px;border-radius:6px;white-space:pre-wrap;color:var(--ink)}
@@ -843,7 +844,9 @@ function forecastHtml(ps,pe,list,eur){
     if(done.has(d) || !PLAN[fromIso(d).getDay()]) continue;
     if(!state.months[d.slice(0,7)]){ if(d>=today) missing.add(d.slice(0,7)); continue; }
     const s=planShift(d); if(!s || s.n!==state.me) continue;
-    (d<today?past:plan).push(s);
+    // Heute zählt nur als „kommt noch“, solange die Tour nicht vorbei ist oder die Uhr läuft
+    const over = d<today || (d===today && !state.timer && nowMin()>=toMin(s.end));
+    (over?past:plan).push(s);
   }
   const w=state.wage, eMin=list.reduce((a,e)=>a+wMins(e),0);
   const pMin=plan.reduce((a,s)=>a+s.mins,0), pEur=pMin/60*w;
@@ -853,8 +856,8 @@ function forecastHtml(ps,pe,list,eur){
     <div class="fc-h"><h3>Theoretisch im Lohnmonat</h3><button class="linkbtn" data-act="setme" data-n="">${esc(state.me)} ändern</button></div>
     <div class="fc-big"><b class="num">${w||eur?money(eur+pEur):hm(eMin+pMin)}</b><span class="num">${done.size+plan.length} Tage · ${hm(eMin+pMin)} · bis ${dm(pe)}</span></div>
     <div class="fc-rows num">
-      <div><span>Eingetragen: ${done.size} Tage · ${hm(eMin)}</span><b>${money(eur)}</b></div>
-      <div><span>Kommt noch laut Dienstplan: ${plan.length} Touren · ${hm(pMin)}</span><b>+ ${w?money(pEur):'–'}</b></div>
+      <div><span>Eingetragen: ${done.size} Tage · ${hm(eMin)}${done.size?`<small class="dl">${[...done].sort().map(dm).join(' ')}</small>`:''}</span><b>${money(eur)}</b></div>
+      <div><span>Kommt noch laut Dienstplan: ${plan.length} Touren · ${hm(pMin)}${plan.length?`<small class="dl">${plan.map(x=>dm(x.date)).join(' ')}</small>`:''}</span><b>+ ${w?money(pEur):'–'}</b></div>
       <div class="tot"><span>Theoretisch gesamt</span><b>${w||eur?money(eur+pEur):'–'}</b></div>
     </div>
     ${past.length?`<p class="warn">Laut Dienstplan bist du am ${past.map(s=>dm(s.date)).join(', ')} gefahren, aber dafür gibt es keinen Eintrag. Diese Tage zählen nicht mit. Falls du gefahren bist: unten nachtragen.</p>`:''}
